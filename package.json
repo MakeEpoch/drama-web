@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Standalone local-use Hongguo drama browser with continuous HLS playback",
+  "description": "Standalone local-use Hongguo drama browser with original MP4 playback and page cinema",
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node server/index.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
-    "check": "node --check server/index.js && node --check server/app.js && node --check server/playback.js && node --check server/upstream.js && node --check server/media.js"
+    "check": "node --check server/index.js && node --check server/app.js && node --check server/playback.js && node --check server/upstream.js && node --check server/media.js && node --check server/network.js && node --check public/core.js && node --check public/player.js && node --check public/cinema.js && node --check public/app.js"
   },
   "dependencies": {
     "hls.js": "1.6.13",

@@ -240,8 +240,10 @@ function renderDetail(record) {
     el('p', { class: 'episode-hint', text: '播放中会自动进入下一集；手动选集将重新准备该集。' }));
   main.replaceChildren(el('nav', { class: 'detail-navigation' }, el('button', { class: 'button back-button', type: 'button', onclick: home }, '← 返回浏览')), meta, el('div', { class: 'watch-layout' }, viewing, aside));
   renderEpisodes();
-  player.showOverlay(true, '点击上方播放按钮，或选择分集开始观看');
-  player.notice('播放记录仅保存在当前浏览器。首次播放与手动换集需要准备片段。');
+  player.onIdlePlay = () => startEpisode(resumeEpisode || state.episodes[0], resumeEpisode ? record.position : 0);
+  player.showOverlay(true, '点击播放，或退出页面内全屏后选择分集', true);
+  player.cinema.setActive(true);
+  player.notice('播放记录仅保存在当前浏览器。首次播放与手动换集需要下载并准备原视频。');
 }
 function renderEpisodes() {
   if (!episodeGrid) return;

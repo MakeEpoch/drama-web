@@ -42,9 +42,13 @@ async function sendFile(req, res, path, type, cache = 'no-cache') {
   let end = info.size - 1
   let status = 200
   if (req.headers.range) {
-    const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range)
-    if (!range) throw fail('INVALID_RANGE', '不支持的读取范围', 416)
-    start = Number(range[1]); end = range[2] ? Number(range[2]) : end
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range)
+    if (!range || !range[1] && !range[2]) throw fail('INVALID_RANGE', '不支持的读取范围', 416)
+    if (!range[1]) {
+      const suffix = Number(range[2])
+      if (!Number.isSafeInteger(suffix) || suffix <= 0) throw fail('INVALID_RANGE', '读取范围不可用', 416)
+      start = Math.max(0, info.size - suffix)
+    } else { start = Number(range[1]); end = range[2] ? Number(range[2]) : end }
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= info.size) throw fail('INVALID_RANGE', '读取范围不可用', 416)
     end = Math.min(end, info.size - 1)
     status = 206
@@ -63,7 +67,7 @@ export async function createApp({ dataDir, base = '', upstream, managerOptions =
   base = normalizeBase(base)
   await mkdir(dataDir, { recursive: true, mode: 0o700 })
   upstream ??= createUpstream({ dataDir, base })
-  const manager = new PlaybackManager({ upstream, dataDir, base, ...managerOptions })
+  const manager = new PlaybackManager({ upstream, dataDir, base, mode: 'file', ...managerOptions })
   await manager.init()
   const covers = new Map()
   let coverWorkers = 0
@@ -130,6 +134,13 @@ export async function createApp({ dataDir, base = '', upstream, managerOptions =
           const body = manager.playlist(id)
           res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-store' })
           return res.end(body)
+        }
+        const media = /^\/media\/([a-f0-9]{64})\.mp4$/.exec(suffix)
+        if (['GET', 'HEAD'].includes(method) && media) {
+          const lease = manager.leaseMedia(id, media[1])
+          res.once('close', lease.release); res.once('finish', lease.release)
+          try { return await sendFile(req, res, lease.path, 'video/mp4', 'private, max-age=3600') }
+          catch (error) { lease.release(); throw error }
         }
         const segment = /^\/segments\/([^/]+)\/([^/]+)$/.exec(suffix)
         if (['GET', 'HEAD'].includes(method) && segment) {

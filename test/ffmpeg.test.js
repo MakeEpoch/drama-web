@@ -24,7 +24,7 @@ test('real FFmpeg encodes progressively; continuous H264/AAC TS timeline decodes
   const upstream = fixtureUpstream(3)
   let sources = 0
   upstream.source = async (id, target) => { sources++; await copyFile(id === 'e1' ? a : b, target); return { path: target } }
-  const app = await createApp({ dataDir, base: '/drama', upstream, managerOptions: { encoding: { width: 320, height: 568 } } })
+  const app = await createApp({ dataDir, base: '/drama', upstream, managerOptions: { mode: 'hls', encoding: { width: 320, height: 568 } } })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   t.after(() => app.close())

@@ -3,6 +3,7 @@
  * https://github.com/frostming/dsh-hongguo — no upstream license is asserted.
  */
 import { el, request, localURL, readStored, writeStored, PREF_KEY, timeLabel, relativeProgress, storeProgress, videoAspect } from './core.js';
+import { PageCinema } from './cinema.js';
 
 export class DramaPlayer {
   constructor({ onEpisode, onManualEpisode, onHistory } = {}) {
@@ -25,7 +26,7 @@ export class DramaPlayer {
     this.video.defaultPlaybackRate = [0.5, 0.75, 1, 1.25, 1.5, 2].includes(prefs.speed) ? prefs.speed : 1;
     this.video.playbackRate = this.video.defaultPlaybackRate;
     this.message = el('p', { class: 'stage-message', role: 'status', text: '选择一集开始观看' });
-    this.action = el('button', { class: 'button primary', hidden: true, type: 'button', onclick: () => this.failed ? this.retry() : this.play() }, '播放');
+    this.action = el('button', { class: 'button primary', hidden: true, type: 'button', onclick: () => !this.loaded && !this.session && !this.failed ? this.onIdlePlay?.() : this.failed ? this.retry() : this.play() }, '播放');
     this.overlay = el('div', { class: 'stage-overlay' }, this.message, this.action);
     this.stage = el('div', { class: 'video-stage' }, this.video, this.overlay);
     this.playButton = el('button', { type: 'button', class: 'icon-button', 'aria-label': '播放', onclick: () => this.toggle() }, '▶');
@@ -56,13 +57,14 @@ export class DramaPlayer {
       el('div', { class: 'seek-row' }, this.seek, this.clock),
       el('div', { class: 'control-row' }, mainControls, secondaryControls));
     this.root = el('section', { class: 'player', 'aria-label': '视频播放区域' }, this.stage, controls, this.note, this.nextWarning);
-    this.video.addEventListener('timeupdate', () => this.updatePosition());
+    this.cinema = new PageCinema(this.root, fullscreen);
+    this.bindContinuityEvents();
     this.video.addEventListener('playing', () => {
       if (this.failed) { this.video.pause(); return; }
       if (this.initialTarget != null) this.alignStart();
       this.showOverlay(false); this.playButton.textContent = 'Ⅱ'; this.playButton.setAttribute('aria-label', '暂停');
     });
-    this.video.addEventListener('pause', () => { this.playButton.textContent = '▶'; this.playButton.setAttribute('aria-label', '播放'); this.save(); this.reportProgress(); });
+    this.video.addEventListener('pause', () => { if (!this.video.ended) this.continuationWanted = false; this.playButton.textContent = '▶'; this.playButton.setAttribute('aria-label', '播放'); this.save(); this.reportProgress(); });
     this.video.addEventListener('waiting', () => { if (!this.failed && this.loaded) this.showOverlay(true, '正在缓冲，下一集可能仍在准备…'); });
     this.video.addEventListener('canplay', () => { if (this.initialTarget != null) this.alignStart(); if (!this.failed) this.showOverlay(false); });
     this.video.addEventListener('loadedmetadata', () => { this.updateAspect(); this.alignStart(); this.play(); });
@@ -72,11 +74,8 @@ export class DramaPlayer {
       this.updatePosition(); this.save(); this.reportProgress();
     });
     this.video.addEventListener('volumechange', () => { this.volume.value = String(this.video.muted ? 0 : this.video.volume); this.mute.textContent = this.video.muted ? '静音' : '♪'; this.mute.setAttribute('aria-label', this.video.muted ? '取消静音' : '静音'); this.preferences(); });
-    this.video.addEventListener('ended', () => {
-      this.save(); this.reportProgress();
-      if (this.status?.finished) this.showOverlay(true, '已播放完当前剧集');
-      else if (!this.failed) this.showOverlay(true, '正在等待后续片段…');
-    });
+    this.video.addEventListener('ended', () => this.onEnded());
+    this.video.addEventListener('stalled', () => { this.syncProgress(true); if (this.loaded && !this.failed) this.showOverlay(true, '视频读取暂时停顿，正在等待网络恢复…'); });
     this.video.addEventListener('error', () => { if (this.loaded && !this.failed) this.fail('视频无法播放，请重试。'); });
     this.video.addEventListener('keydown', event => {
       if (event.key === ' ' || event.key === 'k') { event.preventDefault(); this.toggle(); }
@@ -84,6 +83,45 @@ export class DramaPlayer {
     });
   }
 
+  bindContinuityEvents() {
+    this.video.addEventListener('timeupdate', () => { this.updatePosition(); this.syncProgress(); });
+    for (const name of ['webkitbeginfullscreen', 'webkitendfullscreen']) this.video.addEventListener(name, () => this.syncProgress(true));
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.syncProgress(true); });
+  }
+  playbackTime() { return (this.mode === 'file' ? this.fileEpisode?.start || 0 : 0) + Math.max(0, this.video.currentTime || 0); }
+  syncProgress(force = false) {
+    if (!this.loaded || !this.session || this.failed) return;
+    const now = Date.now();
+    if (!force && now - (this.lastProgressEvent || 0) < 5000) return;
+    this.lastProgressEvent = now;
+    this.reportProgress();
+  }
+  onEnded() {
+    this.save(); this.syncProgress(true);
+    const index = this.episodes.findIndex(episode => String(episode.id) === String(this.fileEpisode?.id || this.current?.id));
+    const last = this.timeline.at(-1);
+    if (this.status?.finished && this.playbackTime() >= (last?.start || 0) + (last?.duration || 0) - 0.25) {
+      this.continuationWanted = false; this.showOverlay(true, '已播放完当前剧集');
+    } else if (!this.failed) {
+      this.continuationWanted = true;
+      this.showOverlay(true, '正在准备下一集，准备好后自动播放…');
+      if (this.mode === 'file') this.advanceFile(index);
+    }
+  }
+  advanceFile(index = this.episodes.findIndex(episode => String(episode.id) === String(this.fileEpisode?.id))) {
+    if (!this.continuationWanted || this.failed) return;
+    const next = this.episodes[index + 1];
+    const row = next && this.timeline.find(episode => String(episode.id) === String(next.id));
+    if (row?.ready && row.mediaUrl) this.loadFile(row, 0);
+  }
+  loadFile(episode, resume = 0) {
+    if (this.failed || this.fileEpisode?.id === episode.id && this.loaded) return;
+    const source = localURL(episode.mediaUrl).href;
+    this.mode = 'file'; this.loaded = true; this.continuationWanted = false;
+    this.fileEpisode = episode; this.initialTarget = Math.min(resume, Math.max(0, episode.duration - 0.25));
+    this.video.src = source; this.video.load();
+    this.updatePosition();
+  }
   resetAspect() {
     this.root.style.setProperty('--video-ratio', String(videoAspect(0, 0)));
     this.root.classList.toggle('portrait-video', false);
@@ -127,7 +165,10 @@ export class DramaPlayer {
       if (generation === this.generation) { this.nextRetryBusy = false; this.updateNextWarning(); }
     }
   }
-  position() { return relativeProgress(this.timeline, this.video.currentTime); }
+  position() {
+    if (this.mode === 'file' && this.fileEpisode) return { episode: this.fileEpisode, position: Math.max(0, Math.min(this.fileEpisode.duration, this.video.currentTime || 0)), duration: this.fileEpisode.duration };
+    return relativeProgress(this.timeline, this.playbackTime());
+  }
   save() {
     if (!this.loaded || this.initialTarget != null) return;
     const p = this.position();
@@ -175,7 +216,7 @@ export class DramaPlayer {
     const p = this.position();
     if (!p || this.failed) return;
     this.initialTarget = null;
-    this.video.currentTime = p.episode.start + Math.max(0, Math.min(p.duration - 0.05, value));
+    this.video.currentTime = (this.mode === 'file' ? 0 : p.episode.start) + Math.max(0, Math.min(p.duration - 0.05, value));
     this.reportProgress();
   }
   alignStart() {
@@ -190,18 +231,12 @@ export class DramaPlayer {
   }
   async play() {
     if (!this.loaded || this.failed) return;
+    if (this.mode === 'file' && this.continuationWanted) { this.advanceFile(); if (this.continuationWanted) return; }
     try { await this.video.play(); }
     catch (error) { if (error.name !== 'AbortError') this.showOverlay(true, '视频已准备好，点击开始播放', true); }
   }
   toggle() { if (this.failed) this.retry(); else if (this.video.paused) this.play(); else this.video.pause(); }
-  async fullscreen() {
-    try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-      else if (this.root.requestFullscreen) await this.root.requestFullscreen();
-      else if (this.video.webkitEnterFullscreen) this.video.webkitEnterFullscreen();
-      else this.notice('当前浏览器不支持全屏。');
-    } catch { this.notice('无法进入全屏，请检查浏览器权限。'); }
-  }
+  fullscreen() { this.cinema?.toggle(); }
   async togglePip() {
     try {
       if (document.pictureInPictureElement) await document.exitPictureInPicture();
@@ -211,6 +246,7 @@ export class DramaPlayer {
 
   async begin(series, episodes, episode, resumeAt = 0) {
     this.stop();
+    this.cinema?.setActive(this.root.isConnected);
     const generation = this.generation;
     this.series = series; this.episodes = episodes; this.current = episode;
     this.resumeAt = Math.max(0, Number(resumeAt) || 0);
@@ -224,14 +260,15 @@ export class DramaPlayer {
     try { if (series.cover) this.video.poster = localURL(series.cover).href; } catch { /* Optional poster. */ }
     this.updateNavigation(); this.onEpisode?.(episode);
     this.showOverlay(true, `正在准备第 ${episode.number} 集…`);
-    this.notice('首次播放需要准备片段；就绪后从本集开头或保存的位置播放。');
+    this.notice('首次播放需要下载并准备原视频；完成后从本集开头或保存的位置播放。');
     try {
       // Do not abort creation: if navigation races the response, delete the returned session.
       const session = await request('api/playback', { method: 'POST', body: { seriesId: String(series.id), episodeId: String(episode.id) } });
       if (generation !== this.generation) { if (session.id) this.release(session.id); return; }
       if (session.id) this.session = session;
-      if (!session.id || !session.statusUrl || !session.playlistUrl) throw new Error('播放会话数据不完整');
-      localURL(session.statusUrl); localURL(session.playlistUrl);
+      this.mode = session.mode || 'hls';
+      if (!session.id || !session.statusUrl || this.mode !== 'file' && !session.playlistUrl) throw new Error('播放会话数据不完整');
+      localURL(session.statusUrl); if (session.playlistUrl) localURL(session.playlistUrl);
       this.poll(generation);
       this.progressTimer = setInterval(() => { if (!this.video.paused) this.reportProgress(); }, 5000);
     } catch (error) { if (generation === this.generation) this.fail(error.message); }
@@ -244,6 +281,7 @@ export class DramaPlayer {
       if (generation !== this.generation) return;
       this.pollFailures = 0;
       this.acceptStatus(status);
+      if (!this.video.paused) this.syncProgress();
     } catch (error) {
       if (generation !== this.generation || error.name === 'AbortError') return;
       this.pollFailures++;
@@ -263,6 +301,16 @@ export class DramaPlayer {
     this.updateNextWarning();
     this.timeline = status.episodes.map(item => ({ ...item, id: String(item.id), start: Number(item.start), duration: Number(item.duration) }));
     if (status.state === 'error') { this.fail(typeof status.error === 'string' ? status.error : status.error?.message || '视频准备失败，请重试'); return; }
+    if ((status.mode || this.mode) === 'file') {
+      this.mode = 'file';
+      if (!this.loaded) {
+        const first = this.timeline.find(episode => episode.id === String(this.current?.id));
+        if (first?.ready && first.mediaUrl) this.loadFile(first, this.resumeAt);
+      } else this.advanceFile();
+      this.notice(status.nextError ? '下一集准备失败，当前视频不受影响，可点重试下一集。' : '原视频播放 · 下载解密后可观看，下一集按需准备，切集可能短暂等待。');
+      this.updatePosition();
+      return;
+    }
     if (!this.loaded && ['ready', 'ended'].includes(status.state) && this.timeline.some(item => item.ready && item.duration > 0)) {
       const first = this.timeline.find(item => item.ready && item.duration > 0);
       // duration is the prepared segment duration, not necessarily the full episode.
@@ -319,15 +367,23 @@ export class DramaPlayer {
   }
 
   async reportProgress() {
-    if (!this.session || !this.loaded || this.failed || this.progressBusy || this.initialTarget != null) return;
+    if (!this.session || !this.loaded || this.failed || this.initialTarget != null) return;
+    if (this.progressBusy) { this.progressAgain = true; return; }
     this.progressBusy = true;
     const generation = this.generation;
+    const time = this.playbackTime();
     try {
-      const status = await request(`api/playback/${encodeURIComponent(this.session.id)}/progress`, { method: 'POST', body: { time: Math.max(0, this.video.currentTime || 0) }, signal: this.controller.signal });
+      const status = await request(`api/playback/${encodeURIComponent(this.session.id)}/progress`, { method: 'POST', body: { time }, signal: this.controller.signal });
       if (generation === this.generation && Array.isArray(status?.episodes)) this.acceptStatus(status);
     } catch (error) {
       if (generation === this.generation && error.name !== 'AbortError') this.notice(`播放进度暂未同步，下一集预热可能延迟：${error.message}`);
-    } finally { if (generation === this.generation) this.progressBusy = false; }
+    } finally {
+      if (generation === this.generation) {
+        this.progressBusy = false;
+        const again = this.progressAgain; this.progressAgain = false;
+        if (again && Math.abs(this.playbackTime() - time) > 0.1) this.reportProgress();
+      }
+    }
   }
   fail(message) {
     this.save(); this.failed = true;
@@ -346,11 +402,14 @@ export class DramaPlayer {
     request(`api/playback/${encodeURIComponent(id)}`, { method: 'DELETE', keepalive: true }).catch(() => { /* Server TTL is the fallback if the browser is offline. */ });
   }
   stop() {
+    this.cinema?.setActive(false);
+    this.continuationWanted = false;
     if (this.loaded && this.initialTarget == null) this.lastPosition = this.position();
     this.save(); this.generation++;
     clearTimeout(this.pollTimer); clearInterval(this.progressTimer);
     this.controller?.abort(); this.controller = null;
-    this.progressBusy = false; this.loaded = false; this.initialTarget = null;
+    this.progressBusy = false; this.progressAgain = false; this.lastProgressEvent = 0;
+    this.loaded = false; this.initialTarget = null; this.fileEpisode = null; this.mode = null;
     this.status = null; this.nextRetryBusy = false; this.nextRetryError = ''; this.updateNextWarning();
     this.previous.disabled = true; this.next.disabled = true; this.seek.disabled = true;
     this.engine?.destroy(); this.engine = null;

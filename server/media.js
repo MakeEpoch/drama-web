@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFile, readdir, stat, rm } from 'node:fs/promises'
+import { readFile, readdir, stat, rm, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fail } from './errors.js'
@@ -57,6 +57,38 @@ export async function directorySize(dir) {
     if (file.isFile()) size += await stat(join(dir, file.name)).then(info => info.size).catch(error => { if (error.code === 'ENOENT') return 0; throw error })
   }
   return size
+}
+
+/** Original playback path: bounded download, CENC decryption and MP4 stream-copy.
+ * No real-time video encoding or live manifest dependency; publish complete files.
+ */
+export async function prepareFile(job, { source, ffmpeg = '/usr/bin/ffmpeg', ffprobe = '/usr/bin/ffprobe', outputLimit = 128 * 1024 ** 2 } = {}) {
+  const input = join(job.dir, 'source.mp4')
+  const partial = join(job.dir, 'output.part.mp4')
+  const output = join(job.dir, 'output.mp4')
+  const signal = job.controller.signal
+  try {
+    const resolved = await source(job.episode.id, input, signal)
+    const decrypt = resolved.key ? ['-decryption_key', resolved.key] : []
+    const probeArgs = ['-v', 'quiet', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe', '-f', 'mov']
+    const info = JSON.parse(await runProcess(ffprobe, [...probeArgs, ...decrypt, '-i', resolved.path, '-show_entries', 'stream=codec_type,codec_name:format=duration', '-of', 'json'], { signal, timeoutMs: 20_000, capture: true }))
+    const video = info.streams?.find(row => row.codec_type === 'video')
+    if (!video || !['h264', 'hevc'].includes(video.codec_name)) throw fail('SOURCE_CODEC', '原视频编码暂不支持，请更换剧集')
+    await runProcess(ffmpeg, ['-v', 'error', '-max_alloc', '67108864', '-nostdin', '-y', '-threads', '2', '-protocol_whitelist', 'file,pipe', '-f', 'mov', ...decrypt, '-i', resolved.path,
+      '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-tag:v', video.codec_name === 'hevc' ? 'hvc1' : 'avc1',
+      '-movflags', '+faststart', '-fs', String(outputLimit + 1), partial], { signal, timeoutMs: 120_000 })
+    if ((await stat(partial)).size > outputLimit) throw fail('OUTPUT_TOO_LARGE', '该集文件超过大小限制', 413)
+    const verified = JSON.parse(await runProcess(ffprobe, [...probeArgs, '-i', partial, '-show_entries', 'format=duration', '-of', 'json'], { signal, timeoutMs: 20_000, capture: true }))
+    const duration = Number(verified.format?.duration)
+    const originalDuration = Number(info.format?.duration)
+    if (!(duration > 0) || originalDuration > 0 && duration < originalDuration - Math.max(0.5, originalDuration * 0.005)) throw fail('MEDIA_INCOMPLETE', '原视频文件不完整，请重试')
+    await rename(partial, output)
+    job.duration = duration
+    job.fileReady = true
+    job.done = true
+  } finally {
+    await Promise.all([rm(input, { force: true }), rm(partial, { force: true })])
+  }
 }
 
 export function videoProfile(stream, maxEdge = 960) {

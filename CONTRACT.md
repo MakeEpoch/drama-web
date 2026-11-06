@@ -1,28 +1,38 @@
 # Drama Web implementation contract
 
-Standalone local-use Hongguo drama website derived from frostming/dsh-hongguo commit a914be7599b99abf713ff7134511910396377f22. No DSH dependency. Content keys, anonymous device profiles, video/cache/state and private host settings must stay outside version control. Preserve upstream attribution; upstream has no explicit LICENSE in that tree, and copied source is not relicensed as MIT.
+Standalone local-use website derived from frostming/dsh-hongguo a914be7599b99abf713ff7134511910396377f22. Preserve attribution; no upstream license is asserted or replaced with MIT. Keep anonymous profiles, content keys, signed CDN URLs, media and host configuration out of Git and browser responses. No DSH dependency.
 
-## Routes and shared data
-Server Node >=24; tested with nodejs@24.22.2. Backend HOST/PORT configurable (default loopback 3338), DATA_DIR outside tracked tree. Standalone port delivery; no Nginx configuration is required. PUBLIC_BASE optionally supports /drama (strip trailing slash). Frontend base is new URL('./', location.href).pathname (root or /drama/); no hardcoded /api root. Backend returned same-origin URLs MUST include PUBLIC_BASE, never raw signed CDN URLs/keys.
-- GET /api/health -> {ok:true,...}
-- GET /api/feed -> {items:[{id,title,description,cover,episodes,heat}],...}; cover is safe same-origin proxy URL with base.
-- GET /api/search?q=&cursor= -> {items:[same],cursor,hasMore}; may use nextCursor too but document exact fields.
-- GET /api/series?id= -> {series:{id,title,description,cover,episodes},episodes:[{id,number,title}]}; use this exact response shape.
-- POST /api/playback {seriesId,episodeId} -> {id,playlistUrl,statusUrl}; return quickly while preparing. IDs are opaque strings.
-- GET /api/playback/:id -> {id,state:'preparing'|'ready'|'error'|'ended',playlistUrl,episodes:[{id,number,title,start,duration,ready}],finished,error?,nextError?:{episodeId,code,message}}. Episodes list is the bounded retained timeline (previous + current + preheated next); start/duration are absolute session seconds, never reset when the window moves. state=ready once playable segments are available. A future episode failure is nextError, not a fatal current-playback error; preserve the healthy playlist prefix.
-- POST /api/playback/:id/progress {time:number} -> same status or {ok:true}; report every ~5sec, warm/append next as playhead advances, never transcode entire long series eagerly. Retain previous+current+next only, extend one ahead. Client uses status every ~2sec while playing/preparing and low-frequency keepalive when paused/finished; stop on abandon/fatal error, not just finished.
-- POST /api/playback/:id/retry-next {} -> same status; explicitly retry a failed future episode/extension without rebuilding the current session or automatically replaying writes. Clear nextError only when the new preparation is accepted/succeeds; failures remain visible.
-- DELETE /api/playback/:id -> {ok:true}; release session. Remove unreferenced queued jobs immediately, abort unreferenced running jobs, never cancel a shared job or delete files with active segment readers.
-- GET /api/playback/:id/index.m3u8 -> one stable-URL bounded rolling HLS media playlist, NOT PLAYLIST-TYPE:EVENT. Retain previous + current + preheated next episode, preserving overlapping segment URIs and absolute session timeline; maintain MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE as history is removed. Append episode boundaries with #EXT-X-DISCONTINUITY; don't reset video.src on natural episode boundary. Manual selection outside this window creates a new session. #EXT-X-ENDLIST only on actual last episode. Empty playlist must not be fed to player; client waits ready first. Hls.js startPosition=0 initially (not live edge), liveSync behavior must not skip initial episode. If native HLS used, preserve beginning playback.
-- Segment paths backend defined (same-origin/base-safe). Completed files served only, playlist atomic; abort requests don't cancel shared transcode. Explicit error on failed transcode/source; no fake success.
-- GET /api/cover?u= upstream limited trusted CDN fetch; bounded image size, HEIC->JPEG on Linux via existing /usr/bin/ffmpeg. Prefer covers in returned API to already proxy.
-- GET /vendor/hls.min.js from pinned hls.js dependency; static public assets root.
-- All JSON errors {ok:false,error:{code?,message}} with appropriate HTTP status, credentials/CDN URL/key redacted.
+## Runtime
 
-## Playback requirements
-Use ffmpeg H.264/AAC (existing libx264/aac) MPEG-TS HLS ~2sec segments, keyframe aligned; no realtime input throttling. Generate segments while encoding, start after a small playable buffer, preheat next episode. Maintain one HTML video and one Hls instance per playback session, not one per auto-next episode. A codec-consistent output across episodes is required; handle no audio gracefully. Derive each series' stable encoding profile from its first admitted episode's probed width/height/SAR/rotation, not a fixed portrait pad. Use even aspect-preserving dimensions (long edge up to 960; typical landscape 960x540 / portrait 540x960). Preheated/concurrent episodes share the same profile; a versioned profile identity participates in the job/cache key to prevent reuse of fixed-portrait outputs. Avoid exposing FFmpeg content key in responses/logs/committed fixtures. Limit transcode concurrency (e.g. 1-2 with bounded threads), cache bounded by bytes+age and protect active jobs/sessions; cleanup belongs to application DATA_DIR only, don't touch DSH plugin cache. Source fetching must have byte/time limits and honor allowlisted CDN redirects.
+Node >=24 (tested 24.22.2), FFmpeg/FFprobe. Independent port 3338, configurable HOST/PORT, private DATA_DIR outside tracked files. PUBLIC_BASE is optional and all returned addresses are same-origin/base-safe. No Nginx deployment required.
 
-Browser features: polished responsive standalone browsing, search/paging, show detail+select episode grouped for hundreds of episodes, watching history/resume, play/pause/seek (episode-relative scrub mapped to session timeline), next/previous/manual selection, speed/volume/fullscreen/PiP, loading/error retry, continuous auto-next UI updates from timeline with no src reset. History stores per-episode time, not ever-growing stream time. No agent-state UI or DSH services. No promise of absolute zero buffering: decoding/network/CPU and preheat matter. App currently local-use, not a public redistribution/media host.
+## Default playback
 
-## Validation
-Use node:test and local FFmpeg synthetic fixtures for progressive media, landscape/portrait profiles, discontinuity/timeline, worker failure/queue/cleanup, invalid IDs/routes/URL constraints. Frontend smoke can use the synthetic fixture server. Real upstream and same-player cross-episode transition on the target independent port require separate runtime/browser verification. Synthetic tests are not evidence of real-platform playback. Keep actual failures visible.
+Stability takes priority over seamless HLS: default mode is **file**. Reuse upstream's bounded source-download + CENC decryption + MP4 stream-copy/faststart preparation, not real-time video encoding. Publish complete H.264/HEVC MP4 files with GET/HEAD/Range. No signed CDN URL or key reaches the browser. Do not label this zero-wait CDN streaming. Unsupported codec/source or incomplete preparation is an explicit error.
+
+Use one HTML video and session; natural ended may replace the video src with the next prepared same-origin MP4. A short preparation gap is acceptable. If next is not ready, wait and advance once status supplies its mediaUrl. Do not confuse finished (preparation complete) with completion of the current episode. Media time is episode-relative in the browser and mapped to absolute session seconds for progress/retention; history remains episode-relative.
+
+Prepare current + next only. Retain previous/current/next refs, extend by progress, don't download an entire series eagerly. Future failure is nextError and must not interrupt the healthy current file. Retry is explicit. Preserve shared jobs and active HTTP readers; remove orphan queued jobs and abort exclusive running jobs. Limits/timeouts and cleanup apply only to application data. Existing HLS comparison tests are not the default product behavior.
+
+## API (relative to PUBLIC_BASE)
+
+- GET /api/health -> {ok:true,version,playbackSessions,transcodes}; transcodes is retained as the count of media preparation workers.
+- GET /api/feed -> {items:[{id,title,description,cover,episodes,heat}]}.
+- GET /api/search?q=&cursor= -> {items:[same],cursor,hasMore}.
+- GET /api/series?id= -> {series:{id,title,description,cover,episodes},episodes:[{id,number,title}]}.
+- POST /api/playback {seriesId,episodeId} -> 202 {id,mode:'file',statusUrl}. Return before media preparation finishes.
+- GET /api/playback/:id -> {id,mode:'file',state:'preparing'|'ready'|'error'|'ended',episodes:[{id,number,title,start,duration,ready,mediaUrl?}],finished,nextError?:{episodeId,code,message},error?}. start/duration use absolute session seconds.
+- GET/HEAD /api/playback/:id/media/:job.mp4 -> complete local MP4, supports ordinary/open-ended/suffix byte ranges; only referenced files are readable.
+- POST /api/playback/:id/progress {time:number} -> same status. Update from throttled media events plus timer/lifecycle synchronization, not timer alone.
+- POST /api/playback/:id/retry-next {} -> same status, retry failed future preparation without rebuilding the current session.
+- DELETE /api/playback/:id -> {ok:true}, cancel only exclusive work; preserve active readers/shared refs.
+- GET /api/cover?u= -> bounded trusted-CDN image fetched by opaque token and converted to JPEG.
+- JSON errors -> {ok:false,error:{code,message}}, appropriate HTTP status, no raw credential-bearing SDK/FFmpeg diagnostics. No CORS.
+
+## Page cinema
+
+Fullscreen button toggles page-local cinema, without native Fullscreen APIs or orientation locking. Phone/coarse-pointer landscape in a short viewport automatically hides header/intro/episode picker/footer on the presented detail page, preserving video and compact controls, safe-area and dvh. Portrait restores layout; explicit exit stays exited for the current landscape; navigation/pagehide cleans the class. Normal desktop landscape is not automatically changed. Enter/exit/rotation must not replace video/src/session or start extra pollers. Idle cinema still offers an in-player play/resume action. OS/browser-native fullscreen entries are not claimed to be disabled.
+
+## Verification boundaries
+
+Use node:test and local synthetic media for decryption/remux, dimensions, Range, lifecycle, next-episode behavior, resource cleanup and browser-method/event stubs. Preserve existing regression coverage. Real Safari playback/network/fullscreen behavior requires separate target-device verification; no mobile root cause or successful runtime behavior may be claimed from synthetic tests alone.

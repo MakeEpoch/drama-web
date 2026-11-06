@@ -6,7 +6,7 @@ import { fixtureUpstream, temporary, fakeEncode, until } from './helpers.js'
 
 async function setup(t, upstream = fixtureUpstream(), options = {}) {
   const dataDir = await temporary(t)
-  const app = await createApp({ dataDir, base: '/drama', upstream, managerOptions: { encode: fakeEncode, ...options } })
+  const app = await createApp({ dataDir, base: '/drama', upstream, managerOptions: { mode: 'hls', encode: fakeEncode, ...options } })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   t.after(() => app.close())

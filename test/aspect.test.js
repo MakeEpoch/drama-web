@@ -39,7 +39,7 @@ test('real landscape/portrait output follows first admitted episode, not faster 
     await copyFile(id === 'e1' ? landscape : portrait, path)
     return { path }
   }
-  const app = await createApp({ dataDir, upstream })
+  const app = await createApp({ dataDir, upstream, managerOptions: { mode: 'hls' } })
   t.after(() => app.close())
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')

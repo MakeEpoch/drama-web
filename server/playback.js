@@ -1,16 +1,17 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { encodeEpisode, directorySize, seriesProfile } from './media.js'
+import { encodeEpisode, prepareFile, directorySize, seriesProfile } from './media.js'
 import { fail, publicError, safeId } from './errors.js'
 
 const MiB = 1024 ** 2
-const sum = job => job.segments.reduce((total, segment) => total + segment.duration, 0)
+const sum = job => job.duration ?? job.segments.reduce((total, segment) => total + segment.duration, 0)
+const playableJob = job => job.fileReady || job.segments.length > 0
 export class PlaybackManager {
   constructor({ upstream, dataDir, base = '', concurrency = 2, maxSessions = 6,
     maxBytes = 2048 * MiB, jobBudget = 256 * MiB, idleMs = 120_000,
-    cacheAgeMs = 3_600_000, encode = encodeEpisode, encoding = {} }) {
-    Object.assign(this, { upstream, base, concurrency, maxSessions, maxBytes, jobBudget, idleMs, cacheAgeMs, encode, encoding })
+    cacheAgeMs = 3_600_000, mode = 'hls', encode = mode === 'file' ? prepareFile : encodeEpisode, encoding = {} }) {
+    Object.assign(this, { upstream, base, concurrency, maxSessions, maxBytes, jobBudget, idleMs, cacheAgeMs, mode, encode, encoding })
     this.root = join(resolve(dataDir), 'hls-v1')
     this.sessions = new Map()
     this.seriesProfiles = new Map()
@@ -48,7 +49,7 @@ export class PlaybackManager {
     if (this.sessions.size >= this.maxSessions || this.closed) throw fail('PLAYBACK_BUSY', '播放会话已满', 503)
     let profile = this.seriesProfiles.get(seriesId)
     if (!profile || profile.state === 'failed') {
-      profile = seriesProfile(episodeId)
+      profile = this.mode === 'file' ? { id: 'file-v1', owner: null, fail() {} } : seriesProfile(episodeId)
       this.seriesProfiles.set(seriesId, profile)
       if (this.seriesProfiles.size > 200) {
         for (const [key] of this.seriesProfiles) {
@@ -61,7 +62,7 @@ export class PlaybackManager {
       sequence: 0, discontinuities: 0, entries: [], retryKeys: new Map(), usedAt: Date.now(), createdAt: Date.now(), time: 0 }
     this.sessions.set(id, session)
     session.pending = this.extend(session, index + 1)
-    return { id, playlistUrl: this.url(id), statusUrl: `${this.base}/api/playback/${id}` }
+    return { id, mode: this.mode, ...(this.mode === 'hls' ? { playlistUrl: this.url(id) } : {}), statusUrl: `${this.base}/api/playback/${id}` }
   }
   exclusive(fn) {
     const promise = this.maintenance.then(fn)
@@ -140,7 +141,8 @@ export class PlaybackManager {
       const duration = sum(job)
       const partialCurrent = job.error && index <= session.currentIndex && session.time < start + duration - 0.15
       const row = { id: job.episode.id, number: job.episode.number, title: job.episode.title, start, duration,
-        ready: reachable && job.segments.length > 0 && (!job.error || partialCurrent) }
+        ready: reachable && playableJob(job) && (!job.error || partialCurrent),
+        ...(job.fileReady && !job.error ? { mediaUrl: `${this.base}/api/playback/${session.id}/media/${job.key}.mp4` } : {}) }
       start += duration
       reachable &&= job.done === true && !job.error
       return row
@@ -160,8 +162,8 @@ export class PlaybackManager {
     const end = session.offset + episodes.reduce((total, row) => total + row.duration, 0)
     const playable = episodes.some(row => row.ready)
     const fatal = problem && problem.index <= session.currentIndex && !episodes.some((row, i) => session.entries[i].index >= session.currentIndex && row.ready)
-    return { id, state: fatal ? 'error' : finished && session.time >= end - 0.15 ? 'ended' : playable ? 'ready' : 'preparing',
-      playlistUrl: this.url(id), episodes, finished,
+    return { id, mode: this.mode, state: fatal ? 'error' : finished && session.time >= end - 0.15 ? 'ended' : playable ? 'ready' : 'preparing',
+      ...(this.mode === 'hls' ? { playlistUrl: this.url(id) } : {}), episodes, finished,
       ...(fatal ? { error: { code: problem.code, message: problem.message } } : problem ? { nextError: { episodeId: problem.episodeId, code: problem.code, message: problem.message } } : {}) }
   }
   progress(id, time) {
@@ -235,9 +237,17 @@ export class PlaybackManager {
     if (!job || !job.segments.some(segment => segment.name === name)) throw fail('SEGMENT_NOT_FOUND', '分片已移出窗口或尚未准备好', 404)
     return join(job.dir, name)
   }
+  leaseMedia(id, key) {
+    const session = this.get(id)
+    const job = session.entries.find(entry => entry.job.key === key)?.job
+    if (!/^[a-f0-9]{64}$/.test(key) || !job?.fileReady || job.error) throw fail('MEDIA_NOT_FOUND', '视频尚未准备好或已移出窗口', 404)
+    return this.leaseJob(job, join(job.dir, 'output.mp4'))
+  }
   leaseSegment(id, key, name) {
     const path = this.segment(id, key, name)
-    const job = this.jobs.get(key)
+    return this.leaseJob(this.jobs.get(key), path)
+  }
+  leaseJob(job, path) {
     job.readers++
     let released = false
     return { path, release: () => {
