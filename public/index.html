@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111216">
+  <meta name="description" content="独立短剧放映室，发现短剧、分集观看与本地续播。仅限个人学习与研究。">
+  <title>短剧放映室 · Drama</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./app.css">
+  <script defer src="./vendor/hls.min.js"></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#" aria-label="短剧放映室，返回推荐">
+        <span class="brand-mark" aria-hidden="true">▶</span>
+        <span>短剧放映室<small>DRAMA / 随时入戏</small></span>
+      </a>
+      <form id="search-form" class="search-form" role="search">
+        <label for="search-input" class="sr-only">搜索短剧标题</label>
+        <span aria-hidden="true" class="search-icon">⌕</span>
+        <input id="search-input" type="search" placeholder="搜索想看的短剧" autocomplete="off" maxlength="120">
+        <button class="search-submit" type="submit">搜索</button>
+      </form>
+      <button class="button header-history" id="history-button" type="button"><span aria-hidden="true">◷</span> 观看历史<span id="history-count" class="count-badge" hidden></span></button>
+    </div>
+  </header>
+  <main id="main" class="page" tabindex="-1"></main>
+  <footer class="site-footer">
+    <span>短一点的故事，也值得认真看。</span>
+    <span>仅限个人学习与研究 · 内容版权归权利人所有</span>
+    <span>源自 <a href="https://github.com/frostming/dsh-hongguo" target="_blank" rel="noopener noreferrer">frostming/dsh-hongguo</a> · 数据接口基于 <a href="https://github.com/beilunyang/openhongguo" target="_blank" rel="noopener noreferrer">openhongguo</a></span>
+  </footer>
+  <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title">
+    <div class="dialog-header"><div><p class="eyebrow">YOUR WATCHLIST</p><h2 id="history-title">接着上次的故事</h2></div><button class="icon-button" id="close-history" type="button" aria-label="关闭观看历史">×</button></div>
+    <p class="muted small">记录仅保存在当前浏览器，最多保留最近 30 部。</p>
+    <div id="history-list"></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p class="no-script">请启用 JavaScript 以搜索和播放短剧。</p></noscript>
+</body>
+</html>

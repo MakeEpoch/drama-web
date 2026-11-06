@@ -1,0 +1,26 @@
+# User unit template. Replace paths with your own before installation.
+[Unit]
+Description=Drama Web local HLS player
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/drama-web
+Environment=HOST=127.0.0.1
+Environment=PORT=3338
+Environment=PUBLIC_BASE=
+Environment=DATA_DIR=/path/to/private-drama-data
+# Resolve the Node 24.22.2 executable with:
+# vfox exec nodejs@24.22.2 -- node -p process.execPath
+ExecStart=/absolute/path/to/node-24.22.2 /path/to/drama-web/server/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

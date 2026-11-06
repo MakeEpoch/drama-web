@@ -1,0 +1,17 @@
+{
+  "name": "drama-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone local-use Hongguo drama browser with continuous HLS playback",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "check": "node --check server/index.js && node --check server/app.js && node --check server/playback.js && node --check server/upstream.js && node --check server/media.js"
+  },
+  "dependencies": {
+    "hls.js": "1.6.13",
+    "openhongguo": "0.1.0"
+  }
+}

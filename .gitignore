@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+cache/
+state/
+*.mp4
+*.ts
+*.m3u8
+*.key
+anonymous*.json
+coverage/
+.DS_Store
