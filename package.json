@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server/index.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
-    "check": "node --check server/index.js && node --check server/app.js && node --check server/playback.js && node --check server/upstream.js && node --check server/media.js && node --check server/network.js && node --check public/core.js && node --check public/player.js && node --check public/cinema.js && node --check public/app.js"
+    "check": "node --check server/index.js && node --check server/app.js && node --check server/playback.js && node --check server/upstream.js && node --check server/media.js && node --check server/network.js && node --check public/core.js && node --check public/player.js && node --check public/cinema.js && node --check public/player-controls.js && node --check public/next-media.js && node --check public/app.js"
   },
   "dependencies": {
     "hls.js": "1.6.13",

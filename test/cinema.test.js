@@ -117,6 +117,46 @@ test('timeupdate drives throttled progress without interval callbacks; webkit/vi
   doc.dispatchEvent(new Event('visibilitychange')); assert.equal(reports, 4)
   p.session = null; p.loaded = false; doc.dispatchEvent(new Event('visibilitychange')); assert.equal(reports, 4)
 })
+test('next preload selects just one ready episode and yields bandwidth when current playback is not buffered', () => {
+  const p = player(); const calls = []
+  p.prefetch = { update: (...args) => calls.push(args) }
+  p.video.readyState = 3; p.video.paused = false; p.video.currentTime = 10; p.video.buffered = { length: 1, start: () => 0, end: () => 11 }
+  p.overlay = { hidden: true }
+  p.prefetchNext(); assert.equal(calls.at(-1)[0].id, 'e2'); assert.equal(calls.at(-1)[1], false)
+  p.video.buffered.end = () => 30
+  p.prefetchNext(); assert.equal(calls.at(-1)[1], true); assert.equal(calls.at(-1)[0].id, 'e2')
+  p.prefetchNext(false); assert.equal(calls.at(-1)[1], false)
+})
+test('next-file network error retries at 1/2/4s without rebuilding session/replaying previous file; decode errors do not loop', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const p = player(); let loads = 0; let fatal = 0
+  p.video.load = () => { loads++; p.video.currentTime = 0 }
+  p.loadFile(timeline[1], 0, true)
+  p.initialTarget = null; p.video.error = { code: 2 }
+  for (const delay of [1000, 2000, 4000]) { p.onVideoError(); t.mock.timers.tick(delay); await Promise.resolve() }
+  p.onVideoError()
+  assert.equal(loads, 4)
+  assert.equal(p.switchLoadError.code, 'NEXT_MEDIA_NETWORK')
+  assert.equal(p.failed, undefined); assert.equal(p.session.id, 'same'); assert.equal(p.fileEpisode.id, 'e2')
+  await p.retryNext(); assert.equal(loads, 5); assert.equal(p.switchLoadError, null)
+  p.fail = () => { fatal++ }
+  p.video.error = { code: 4 }; p.onVideoError(); t.mock.timers.tick(30000)
+  assert.equal(fatal, 1); assert.equal(loads, 5); assert.equal(p.switchRecovery, null)
+})
+test('new-file/stop cleanup cancels old prefetch, switch retry and controls timers; stale callbacks cannot reload a newer episode', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const p = player(); let loads = 0, cancels = 0, uiResets = 0
+  p.prefetch = { reset: () => cancels++ }
+  p.controlsUI = { reset: () => uiResets++, start() {} }
+  p.video.load = () => { loads++ }; p.video.removeAttribute = () => {}; p.release = () => {}
+  p.loadFile(timeline[1], 0, true); p.video.error = { code: 2 }; p.onVideoError()
+  p.loadFile(timeline[2], 0, true)
+  t.mock.timers.tick(30000); assert.equal(loads, 2); assert.equal(p.fileEpisode.id, 'e3')
+  p.onVideoError(); p.stop(); t.mock.timers.tick(30000)
+  assert.equal(loads, 3, 'stop clears video once; no late retry reload')
+  assert.equal(p.session, null); assert.equal(p.switchRecovery, null)
+  assert.equal(cancels, 3); assert.equal(uiResets, 3)
+})
 test('cinema CSS covers safe areas/dynamic viewport; button path does not invoke native fullscreen', async () => {
   const css = await readFile(new URL('../public/app.css', import.meta.url), 'utf8')
   const source = await readFile(new URL('../public/player.js', import.meta.url), 'utf8')
